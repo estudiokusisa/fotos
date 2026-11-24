@@ -25,7 +25,7 @@
   .tab.activa { background:var(--principal); color:#fff; }
 
   .escenario {
-    position:relative; flex:1; min-height:55vh; margin:10px 16px 100px;
+    position:relative; flex:1; min-height:55vh; margin:10px 16px 110px;
     border-radius:18px; overflow:hidden; background:rgba(0,0,0,.06);
   }
   .escenario img {
@@ -37,12 +37,28 @@
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     text-align:center; padding:24px; font-family:system-ui,sans-serif; opacity:.7;
   }
+  #playBadge {
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:76px; height:76px; border-radius:50%; background:rgba(0,0,0,.5); color:#fff;
+    display:none; align-items:center; justify-content:center; font-size:2rem; pointer-events:none;
+  }
+  .escenario.es-video { cursor:pointer; }
+  .escenario.es-video #playBadge { display:flex; }
 
   .grilla {
     display:none; grid-template-columns:repeat(auto-fill,minmax(130px,1fr));
-    gap:8px; padding:6px 16px 100px;
+    gap:8px; padding:6px 16px 110px;
   }
-  .grilla img { width:100%; aspect-ratio:1; object-fit:cover; border-radius:10px; cursor:pointer; background:rgba(0,0,0,.06); }
+  .celda { position:relative; }
+  .celda img { display:block; width:100%; aspect-ratio:1; object-fit:cover; border-radius:10px; cursor:pointer; background:rgba(0,0,0,.06); }
+  .insignia {
+    position:absolute; left:8px; bottom:8px; background:rgba(0,0,0,.6); color:#fff; border-radius:999px;
+    font:600 .75rem system-ui,sans-serif; padding:3px 9px; pointer-events:none;
+  }
+  .borrar {
+    position:absolute; right:6px; top:6px; width:30px; height:30px; border-radius:50%; border:none;
+    background:rgba(0,0,0,.65); color:#fff; font-size:.95rem; cursor:pointer;
+  }
   body.modo-grilla .grilla { display:grid; }
   body.modo-grilla .escenario { display:none; }
 
@@ -59,7 +75,24 @@
   #aviso {
     font-family:system-ui,sans-serif; font-size:.92rem; margin-bottom:10px; min-height:1.2em;
   }
-    #cargandoMsg { display:none; }
+  .deshacer {
+    font:inherit; font-weight:600; margin-left:6px; padding:3px 12px; border-radius:999px;
+    border:1px solid var(--principal); background:transparent; color:var(--principal); cursor:pointer;
+  }
+
+  #reproductor {
+    position:fixed; inset:0; background:rgba(0,0,0,.88); display:none; z-index:20;
+    align-items:center; justify-content:center; flex-direction:column; gap:10px; padding:16px;
+  }
+  #reproductor.abierto { display:flex; }
+  #marcoVideo { width:min(96vw,900px); height:min(72vh,560px); border:0; border-radius:12px; background:#000; }
+  #cerrarVideo {
+    align-self:flex-end; width:40px; height:40px; border-radius:50%; border:none;
+    background:rgba(255,255,255,.2); color:#fff; font-size:1.1rem; cursor:pointer;
+  }
+  #notaVideo { color:#fff; opacity:.7; font:.8rem system-ui,sans-serif; text-align:center; }
+
+  #cargandoMsg { display:none; }
   body.cargando > *:not(#cargandoMsg) { visibility:hidden; }
   body.cargando #cargandoMsg {
     display:block; position:fixed; inset:0; text-align:center; padding-top:45vh;
@@ -84,6 +117,7 @@
 <div class="escenario" id="escenario">
   <img id="imgA" alt="">
   <img id="imgB" alt="">
+  <div id="playBadge">▶</div>
   <div class="vacio" id="vacio">Cargando…</div>
 </div>
 
@@ -95,14 +129,25 @@
   <input type="file" id="archivo" accept="image/*" multiple hidden>
 </div>
 
-<script>
-  // ⚠️ Pega aquí la URL de tu aplicación web de Apps Script (termina en /exec)
-  var API_URL = 'https://script.google.com/macros/s/AKfycbwVrL1XrR17noywGFM_BVImdZlKsdQp7N1A4ktIVc3hZRuA56TkEcbGHqF_oP1k0WfIVA/exec';
+<div id="reproductor">
+  <button id="cerrarVideo" aria-label="Cerrar">✕</button>
+  <iframe id="marcoVideo" allow="autoplay; fullscreen" allowfullscreen></iframe>
+  <div id="notaVideo">Si el video recién se subió, puede tardar un minuto en estar listo.</div>
+</div>
 
+<script src="config.js"></script>
+<script>
   var EVENTO = (new URLSearchParams(location.search).get('evento') || '').trim();
   var CONFIG = {};
+  var MAX_VIDEO_MB = 25;
+  var VIDEOS_OK = ['video/mp4', 'video/quicktime', 'video/webm'];
 
   function $(id) { return document.getElementById(id); }
+
+  // Lo que este invitado subió desde este navegador: { idArchivo: llave }
+  var MIS = {};
+  try { MIS = JSON.parse(localStorage.getItem('mis_' + EVENTO) || '{}') || {}; } catch (e) { MIS = {}; }
+  function guardarMis() { try { localStorage.setItem('mis_' + EVENTO, JSON.stringify(MIS)); } catch (e) {} }
 
   // ---------- Comunicación con Apps Script ----------
   function apiGet(params) {
@@ -127,8 +172,9 @@
   }
 
   // ---------- Estado ----------
-  var fotos = [];
+  var fotos = [];          // [{id, t, v}]
   var conocidas = {};
+  var firmaActual = '';
   var indice = 0;
   var capaActiva = 'A';
   var temporizador = null;
@@ -140,6 +186,7 @@
 
   // ---------- Personalización ----------
   function revelar() { document.body.classList.remove('cargando'); }
+
   function aplicarConfig(alTerminar) {
     var raiz = document.documentElement.style;
     if (CONFIG.colorPrincipal) raiz.setProperty('--principal', CONFIG.colorPrincipal);
@@ -148,13 +195,15 @@
     $('titulo').textContent = CONFIG.titulo || '';
     $('subtitulo').textContent = CONFIG.subtitulo || '';
     document.title = CONFIG.titulo || 'Galería de fotos';
+    $('archivo').accept = CONFIG.videos ? 'image/*,video/*' : 'image/*';
+    $('btnSubir').textContent = CONFIG.videos ? 'Cargar foto o video' : 'Cargar tu foto';
 
     var terminado = false;
     function fin() { if (terminado) return; terminado = true; if (alTerminar) alTerminar(); }
     setTimeout(fin, 1500); // si la letra tarda demasiado, se muestra igual
-    
-    if (CONFIG.fuente) { fin(); return; }
-      raiz.setProperty('--fuente', "'" + CONFIG.fuente + "', Georgia, serif");
+
+    if (!CONFIG.fuente) { fin(); return; }
+    raiz.setProperty('--fuente', "'" + CONFIG.fuente + "', Georgia, serif");
     var href = 'https://fonts.googleapis.com/css2?family=' + CONFIG.fuente.replace(/ /g, '+') + '&display=swap';
     var viejo = $('fuenteLink');
     if (viejo && viejo.getAttribute('href') === href) { fin(); return; }
@@ -168,29 +217,48 @@
     document.head.appendChild(l);
   }
 
+  // ---------- Reproductor de video ----------
+  function abrirVideo(id) {
+    $('marcoVideo').src = 'https://drive.google.com/file/d/' + id + '/preview';
+    $('reproductor').classList.add('abierto');
+  }
+  function cerrarVideo() {
+    $('reproductor').classList.remove('abierto');
+    $('marcoVideo').src = 'about:blank';
+  }
+  $('cerrarVideo').onclick = cerrarVideo;
+  $('reproductor').onclick = function (e) { if (e.target === $('reproductor')) cerrarVideo(); };
 
   // ---------- Presentación ----------
   function mostrar(i) {
     if (!fotos.length) return;
     indice = ((i % fotos.length) + fotos.length) % fotos.length;
+    var actual = fotos[indice];
     var entrante = $(capaActiva === 'A' ? 'imgB' : 'imgA');
     var saliente = $(capaActiva === 'A' ? 'imgA' : 'imgB');
-    var url = urlFoto(fotos[indice].id, 1600);
+    var url = urlFoto(actual.id, 1600);
     var pre = new Image();
     pre.onload = function () {
       entrante.src = url;
       entrante.classList.add('visible');
       saliente.classList.remove('visible');
       capaActiva = capaActiva === 'A' ? 'B' : 'A';
+      $('escenario').classList.toggle('es-video', !!actual.v);
     };
     pre.src = url;
     $('vacio').style.display = 'none';
   }
 
+  $('escenario').onclick = function () {
+    var actual = fotos[indice];
+    if (actual && actual.v) abrirVideo(actual.id);
+  };
+
   function iniciarCiclo() {
     clearInterval(temporizador);
     temporizador = setInterval(function () {
       if (document.body.classList.contains('modo-grilla') || fotos.length < 2) return;
+      if ($('reproductor').classList.contains('abierto')) return;
       mostrar(indice + 1);
     }, 5000);
   }
@@ -200,14 +268,36 @@
     var g = $('grilla');
     g.innerHTML = '';
     fotos.slice().reverse().forEach(function (f) {
+      var c = document.createElement('div');
+      c.className = 'celda';
+
       var im = document.createElement('img');
       im.loading = 'lazy';
       im.src = urlFoto(f.id, 400);
       im.onclick = function () {
+        if (f.v) { abrirVideo(f.id); return; }
         setModo('show');
         mostrar(fotos.findIndex(function (x) { return x.id === f.id; }));
       };
-      g.appendChild(im);
+      c.appendChild(im);
+
+      if (f.v) {
+        var ins = document.createElement('div');
+        ins.className = 'insignia'; ins.textContent = '▶ Video';
+        c.appendChild(ins);
+      }
+      if (MIS[f.id]) {
+        var x = document.createElement('button');
+        x.className = 'borrar'; x.textContent = '✕'; x.title = 'Eliminar lo que subí';
+        x.onclick = function (e) {
+          e.stopPropagation();
+          if (!confirm('¿Eliminar este archivo que subiste?')) return;
+          x.disabled = true;
+          borrar(f.id).catch(function () { x.disabled = false; alert('No se pudo eliminar. Inténtalo de nuevo.'); });
+        };
+        c.appendChild(x);
+      }
+      g.appendChild(c);
     });
   }
 
@@ -221,16 +311,24 @@
 
   // ---------- Actualización en vivo ----------
   function recibirFotos(lista) {
+    var firma = lista.map(function (f) { return f.id; }).join(',');
+    if (!primeraCarga && firma === firmaActual) return;
+    firmaActual = firma;
+
     var hayNuevas = false;
     lista.forEach(function (f) { if (!conocidas[f.id]) { conocidas[f.id] = true; hayNuevas = true; } });
-    if (!hayNuevas && !primeraCarga) return;
 
     fotos = lista;
     pintarGrilla();
     if (fotos.length) {
-      mostrar(primeraCarga ? 0 : fotos.length - 1);
+      if (primeraCarga) mostrar(0);
+      else if (hayNuevas) mostrar(fotos.length - 1);
+      else mostrar(Math.min(indice, fotos.length - 1));
       iniciarCiclo();
     } else {
+      $('imgA').classList.remove('visible');
+      $('imgB').classList.remove('visible');
+      $('escenario').classList.remove('es-video');
       $('vacio').textContent = 'Aún no hay fotos. ¡Sé la primera persona en subir una!';
       $('vacio').style.display = 'flex';
     }
@@ -249,11 +347,15 @@
 
   // ---------- Inicio ----------
   function iniciar() {
+    if (typeof API_URL === 'undefined' || !/^https:\/\//.test(API_URL)) {
+      errorFatal('Falta configurar la dirección del sistema (config.js).');
+      return;
+    }
     if (!EVENTO) {
       errorFatal('Falta el código de la galería. Usa el enlace o el código QR que te compartieron.');
       return;
     }
-     var guardada = null;
+    var guardada = null;
     try { guardada = JSON.parse(localStorage.getItem('cfg_' + EVENTO) || 'null'); } catch (e) { guardada = null; }
     if (guardada) { CONFIG = guardada; aplicarConfig(revelar); }
 
@@ -271,12 +373,23 @@
         setInterval(consultar, 8000);
       })
       .catch(function () {
-        errorFatal('No se pudo cargar la galería. Revisa tu conexión e inténtalo de nuevo.');
+        if (!guardada) errorFatal('No se pudo cargar la galería. Revisa tu conexión e inténtalo de nuevo.');
       });
   }
   iniciar();
 
-  // ---------- Subida de fotos ----------
+  // ---------- Eliminar lo que yo subí ----------
+  function borrar(id) {
+    return apiPost({ accion: 'borrar', evento: EVENTO, id: id, token: MIS[id] })
+      .then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || 'Error');
+        delete MIS[id];
+        guardarMis();
+        recibirFotos(fotos.filter(function (f) { return f.id !== id; }));
+      });
+  }
+
+  // ---------- Subida ----------
   function aJpegBase64(archivo) {
     return new Promise(function (resolve, reject) {
       var url = URL.createObjectURL(archivo);
@@ -296,8 +409,17 @@
     });
   }
 
-  function enviar(base64) {
-    return apiPost({ accion: 'subir', evento: EVENTO, imagen: base64, mime: 'image/jpeg' })
+  function aBase64(archivo) {
+    return new Promise(function (resolve, reject) {
+      var lector = new FileReader();
+      lector.onload = function () { resolve(String(lector.result).split(',')[1]); };
+      lector.onerror = function () { reject(new Error('No se pudo leer el video')); };
+      lector.readAsDataURL(archivo);
+    });
+  }
+
+  function enviar(base64, mime) {
+    return apiPost({ accion: 'subir', evento: EVENTO, imagen: base64, mime: mime })
       .then(function (r) {
         if (!r || !r.ok) throw new Error((r && r.error) || 'Error al subir');
         return r;
@@ -305,8 +427,26 @@
   }
 
   var aviso = $('aviso');
+  var avisoT = null;
   var btn = $('btnSubir');
   var input = $('archivo');
+
+  function mostrarAviso(texto, ids, ms) {
+    clearTimeout(avisoT);
+    aviso.textContent = texto;
+    if (ids && ids.length) {
+      var b = document.createElement('button');
+      b.className = 'deshacer'; b.textContent = 'Deshacer';
+      b.onclick = async function () {
+        b.disabled = true;
+        var n = 0;
+        for (var i = 0; i < ids.length; i++) { try { await borrar(ids[i]); n++; } catch (e) {} }
+        mostrarAviso(n ? 'Listo, se eliminó.' : 'No se pudo eliminar.', null, 4000);
+      };
+      aviso.appendChild(b);
+    }
+    avisoT = setTimeout(function () { aviso.textContent = ''; }, ms || 6000);
+  }
 
   btn.onclick = function () { input.click(); };
   input.onchange = async function () {
@@ -315,29 +455,42 @@
     if (!archivos.length) return;
 
     btn.disabled = true;
-    var subidas = 0, fallos = 0, moderada = false;
+    var subidas = [], fallos = 0, pesados = 0, moderada = false;
     for (var i = 0; i < archivos.length; i++) {
-      aviso.textContent = 'Subiendo ' + (i + 1) + ' de ' + archivos.length + '…';
+      var a = archivos[i];
+      var esVideo = (a.type || '').indexOf('video/') === 0;
+      clearTimeout(avisoT);
+      aviso.textContent = 'Subiendo ' + (i + 1) + ' de ' + archivos.length + (esVideo ? ' (los videos tardan un poco)…' : '…');
       try {
-        var b64 = await aJpegBase64(archivos[i]);
-        var r = await enviar(b64);
-        if (r && r.moderada) moderada = true;
-        subidas++;
+        var b64, mime;
+        if (esVideo) {
+          if (!CONFIG.videos || VIDEOS_OK.indexOf(a.type) < 0) throw new Error('formato');
+          if (a.size > MAX_VIDEO_MB * 1024 * 1024) { pesados++; throw new Error('pesado'); }
+          b64 = await aBase64(a); mime = a.type;
+        } else {
+          b64 = await aJpegBase64(a); mime = 'image/jpeg';
+        }
+        var r = await enviar(b64, mime);
+        if (r.moderada) moderada = true;
+        MIS[r.id] = r.token;
+        subidas.push(r.id);
       } catch (e) { fallos++; }
     }
+    guardarMis();
     btn.disabled = false;
 
-    if (subidas && !fallos) {
-      aviso.textContent = moderada
-        ? '¡Gracias! Tu foto aparecerá en la galería cuando sea aprobada.'
-        : (CONFIG.mensajeGracias || '¡Gracias! Tu foto ya está en la galería.');
-    } else if (subidas && fallos) {
-      aviso.textContent = 'Se subieron ' + subidas + ' foto(s); ' + fallos + ' no se pudieron subir.';
+    if (subidas.length && !fallos) {
+      mostrarAviso(moderada
+        ? '¡Gracias! Aparecerá en la galería cuando sea aprobado.'
+        : (CONFIG.mensajeGracias || '¡Gracias! Ya está en la galería.'), subidas, 20000);
+    } else if (subidas.length) {
+      mostrarAviso('Se subieron ' + subidas.length + '; ' + fallos + ' no se pudieron subir.', subidas, 20000);
+    } else if (pesados) {
+      mostrarAviso('El video pesa más de ' + MAX_VIDEO_MB + ' MB. Graba uno más corto (unos 20 a 30 segundos).', null, 9000);
     } else {
-      aviso.textContent = 'No se pudo subir la foto. Inténtalo de nuevo.';
+      mostrarAviso('No se pudo subir. Inténtalo de nuevo.', null, 6000);
     }
-    setTimeout(function () { aviso.textContent = ''; }, 6000);
-    if (!moderada) setTimeout(consultar, 1500);
+    if (!moderada && subidas.length) setTimeout(consultar, 1500);
   };
 </script>
 </body>
