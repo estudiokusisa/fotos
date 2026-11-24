@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Aprobar fotos</title>
+<style>
+  :root { --principal:#999999; --fondo:#ffffff; --texto:#333333; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:system-ui,-apple-system,Segoe UI,sans-serif; background:var(--fondo); color:var(--texto); min-height:100vh; padding:20px 16px 60px; }
+  body.cargando > *:not(#cargandoMsg) { visibility:hidden; }
+  #cargandoMsg { display:none; }
+  body.cargando #cargandoMsg { display:block; position:fixed; inset:0; text-align:center; padding-top:45vh; color:#999; }
+  .contenedor { max-width:900px; margin:0 auto; }
+  h1 { font-size:1.4rem; font-weight:700; }
+  .sub { opacity:.7; margin:4px 0 14px; font-size:.95rem; }
+  .barra { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+  #contador { font-weight:600; }
+  button { font:inherit; cursor:pointer; border-radius:999px; border:1px solid var(--principal); background:transparent; color:var(--principal); padding:9px 18px; font-size:.95rem; }
+  button.primario { background:var(--principal); color:#fff; font-weight:600; }
+  button.malo { border-color:#c0564b; color:#c0564b; }
+  button:disabled { opacity:.55; cursor:default; }
+  .grilla { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:14px; }
+  .tarjeta { border:1px solid rgba(0,0,0,.1); border-radius:16px; overflow:hidden; background:rgba(255,255,255,.6); }
+  .miniatura { position:relative; aspect-ratio:1; background:rgba(0,0,0,.06); cursor:pointer; }
+  .miniatura img { width:100%; height:100%; object-fit:cover; display:block; }
+  .insignia { position:absolute; left:8px; bottom:8px; background:rgba(0,0,0,.6); color:#fff; border-radius:999px; font-size:.75rem; font-weight:600; padding:3px 9px; }
+  .acciones { display:flex; gap:8px; padding:10px; }
+  .acciones button { flex:1; padding:10px 6px; }
+  .vacio { text-align:center; opacity:.65; padding:50px 10px; }
+  .error { color:#b3392e; text-align:center; padding:40px 10px; }
+  .nota { background:rgba(0,0,0,.05); border-radius:12px; padding:10px 14px; font-size:.9rem; margin-bottom:14px; }
+
+  #visor { position:fixed; inset:0; background:rgba(0,0,0,.88); display:none; z-index:20; align-items:center; justify-content:center; flex-direction:column; gap:10px; padding:16px; }
+  #visor.abierto { display:flex; }
+  #visor img { max-width:96vw; max-height:78vh; border-radius:10px; }
+  #visor iframe { width:min(96vw,900px); height:min(72vh,560px); border:0; border-radius:12px; background:#000; }
+  #cerrarVisor { align-self:flex-end; width:40px; height:40px; padding:0; border:none; background:rgba(255,255,255,.2); color:#fff; }
+</style>
+</head>
+<body class="cargando">
+<div id="cargandoMsg">Cargando…</div>
+
+<div class="contenedor">
+  <h1 id="titulo">Aprobar fotos</h1>
+  <div class="sub">Las fotos y videos que suban los invitados aparecen aquí. Lo que apruebes se publica en la galería; lo que rechaces se elimina.</div>
+  <div id="notaMod" class="nota" hidden>La aprobación está desactivada en esta galería: todo se publica directamente.</div>
+  <div class="barra">
+    <div id="contador"></div>
+    <button class="primario" id="btnTodas" hidden>Aprobar todas</button>
+  </div>
+  <div id="contenido"></div>
+</div>
+
+<div id="visor"><button id="cerrarVisor" aria-label="Cerrar">✕</button><div id="visorCuerpo"></div></div>
+
+<script src="config.js"></script>
+<script>
+  var P = new URLSearchParams(location.search);
+  var EVENTO = (P.get('evento') || '').trim();
+  var CLAVE = (P.get('clave') || '').trim();
+  var CONFIG = {};
+  var lista = [];
+  var firma = null;
+  function $(id) { return document.getElementById(id); }
+
+  function apiGet(params) {
+    return fetch(API_URL + '?' + new URLSearchParams(params).toString()).then(function (r) { return r.json(); });
+  }
+  function apiPost(obj) {
+    return fetch(API_URL, { method:'POST', headers:{ 'Content-Type':'text/plain;charset=utf-8' }, body: JSON.stringify(obj) })
+      .then(function (r) { return r.json(); });
+  }
+  function urlFoto(id, ancho) { return 'https://drive.google.com/thumbnail?id=' + id + '&sz=w' + ancho; }
+
+  function fatal(texto) {
+    document.body.classList.remove('cargando');
+    $('contenido').innerHTML = '';
+    var d = document.createElement('div'); d.className = 'error'; d.textContent = texto;
+    $('contenido').appendChild(d);
+    $('btnTodas').hidden = true; $('contador').textContent = '';
+    clearInterval(timer);
+  }
+
+  // ---------- Visor ----------
+  function abrirVisor(f) {
+    var c = $('visorCuerpo'); c.innerHTML = '';
+    if (f.v) {
+      var fr = document.createElement('iframe');
+      fr.allow = 'autoplay; fullscreen'; fr.allowFullscreen = true;
+      fr.src = 'https://drive.google.com/file/d/' + f.id + '/preview';
+      c.appendChild(fr);
+    } else {
+      var im = document.createElement('img'); im.src = urlFoto(f.id, 1600); c.appendChild(im);
+    }
+    $('visor').classList.add('abierto');
+  }
+  function cerrarVisor() { $('visor').classList.remove('abierto'); $('visorCuerpo').innerHTML = ''; }
+  $('cerrarVisor').onclick = cerrarVisor;
+  $('visor').onclick = function (e) { if (e.target === $('visor')) cerrarVisor(); };
+
+  // ---------- Lista ----------
+  function decidir(ids, decision) {
+    return apiPost({ accion: 'moderar', evento: EVENTO, clave: CLAVE, ids: ids, decision: decision })
+      .then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || 'Error');
+        lista = lista.filter(function (f) { return ids.indexOf(f.id) < 0; });
+        firma = lista.map(function (f) { return f.id; }).join(',');
+        pintar();
+      });
+  }
+
+  function pintar() {
+    var cont = $('contenido');
+    cont.innerHTML = '';
+    var n = lista.length;
+    $('contador').textContent = n ? (n + (n === 1 ? ' archivo esperando aprobación' : ' archivos esperando aprobación')) : '';
+    $('btnTodas').hidden = n < 2;
+
+    if (!n) {
+      cont.innerHTML = '<div class="vacio">No hay fotos pendientes.<br>Esta pantalla se actualiza sola.</div>';
+      return;
+    }
+    var g = document.createElement('div'); g.className = 'grilla';
+    lista.slice().reverse().forEach(function (f) {
+      var t = document.createElement('div'); t.className = 'tarjeta';
+      var m = document.createElement('div'); m.className = 'miniatura';
+      var im = document.createElement('img'); im.loading = 'lazy'; im.src = urlFoto(f.id, 500);
+      m.appendChild(im);
+      if (f.v) { var ins = document.createElement('div'); ins.className = 'insignia'; ins.textContent = '▶ Video'; m.appendChild(ins); }
+      m.onclick = function () { abrirVisor(f); };
+      var a = document.createElement('div'); a.className = 'acciones';
+      var ok = document.createElement('button'); ok.className = 'primario'; ok.textContent = '✓ Aprobar';
+      var no = document.createElement('button'); no.className = 'malo'; no.textContent = '✕ Rechazar';
+      function accion(dec) {
+        return function () {
+          ok.disabled = true; no.disabled = true;
+          decidir([f.id], dec).catch(function () { ok.disabled = false; no.disabled = false; alert('No se pudo completar. Inténtalo de nuevo.'); });
+        };
+      }
+      ok.onclick = accion('aprobar'); no.onclick = accion('rechazar');
+      a.appendChild(ok); a.appendChild(no);
+      t.appendChild(m); t.appendChild(a); g.appendChild(t);
+    });
+    cont.appendChild(g);
+  }
+
+  $('btnTodas').onclick = function () {
+    var b = $('btnTodas');
+    if (!confirm('¿Aprobar todas las fotos y videos pendientes?')) return;
+    b.disabled = true;
+    var ids = lista.map(function (f) { return f.id; });
+    decidir(ids, 'aprobar').catch(function () { alert('No se pudo completar. Inténtalo de nuevo.'); }).then(function () { b.disabled = false; });
+  };
+
+  var timer = null;
+  function cargar() {
+    if (document.hidden) return;
+    apiGet({ accion: 'pendientes', evento: EVENTO, clave: CLAVE })
+      .then(function (r) {
+        if (!r || !r.ok) { fatal((r && r.error) || 'No se pudo cargar.'); return; }
+        document.body.classList.remove('cargando');
+        var f = r.pendientes.map(function (x) { return x.id; }).join(',');
+        if (f === firma) return;
+        firma = f; lista = r.pendientes; pintar();
+      })
+      .catch(function () { /* reintenta */ });
+  }
+
+  function iniciar() {
+    if (typeof API_URL === 'undefined' || !/^https:\/\//.test(API_URL)) { fatal('Falta configurar la dirección del sistema (config.js).'); return; }
+    if (!EVENTO || !CLAVE) { fatal('Este enlace está incompleto. Pide el enlace de aprobación de nuevo.'); return; }
+    apiGet({ accion: 'config', evento: EVENTO }).then(function (r) {
+      if (!r || !r.ok) { fatal('No se encontró esta galería.'); return; }
+      CONFIG = r.config;
+      var raiz = document.documentElement.style;
+      if (CONFIG.colorPrincipal) raiz.setProperty('--principal', CONFIG.colorPrincipal);
+      if (CONFIG.colorFondo) raiz.setProperty('--fondo', CONFIG.colorFondo);
+      if (CONFIG.colorTexto) raiz.setProperty('--texto', CONFIG.colorTexto);
+      $('titulo').textContent = 'Aprobar fotos · ' + (CONFIG.titulo || '');
+      document.title = 'Aprobar fotos · ' + (CONFIG.titulo || '');
+      $('notaMod').hidden = !!CONFIG.moderar;
+      cargar();
+      timer = setInterval(cargar, 10000);
+    }).catch(function () { fatal('No se pudo cargar. Revisa tu conexión.'); });
+  }
+  iniciar();
+</script>
+</body>
+</html>
