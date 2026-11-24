@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Galería de fotos</title>
 <style>
-  :root { --principal:#b08968; --fondo:#fffaf5; --texto:#3b2f2f; }
+  :root { --principal:#999999; --fondo:#ffffff; --texto:#333333; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body {
     font-family: Georgia, 'Times New Roman', serif;
@@ -59,9 +59,16 @@
   #aviso {
     font-family:system-ui,sans-serif; font-size:.92rem; margin-bottom:10px; min-height:1.2em;
   }
+    #cargandoMsg { display:none; }
+  body.cargando > *:not(#cargandoMsg) { visibility:hidden; }
+  body.cargando #cargandoMsg {
+    display:block; position:fixed; inset:0; text-align:center; padding-top:45vh;
+    font-family:system-ui,sans-serif; color:#999; font-size:.95rem;
+  }
 </style>
 </head>
-<body>
+<body class="cargando">
+<div id="cargandoMsg">Cargando…</div>
 
 <header>
   <h1 id="titulo"></h1>
@@ -112,6 +119,7 @@
   }
 
   function errorFatal(texto) {
+    document.body.classList.remove('cargando');
     document.querySelector('.tabs').style.display = 'none';
     document.querySelector('.barra').style.display = 'none';
     $('vacio').textContent = texto;
@@ -131,7 +139,8 @@
   }
 
   // ---------- Personalización ----------
-  function aplicarConfig() {
+  function revelar() { document.body.classList.remove('cargando'); }
+  function aplicarConfig(alTerminar) {
     var raiz = document.documentElement.style;
     if (CONFIG.colorPrincipal) raiz.setProperty('--principal', CONFIG.colorPrincipal);
     if (CONFIG.colorFondo) raiz.setProperty('--fondo', CONFIG.colorFondo);
@@ -139,14 +148,26 @@
     $('titulo').textContent = CONFIG.titulo || '';
     $('subtitulo').textContent = CONFIG.subtitulo || '';
     document.title = CONFIG.titulo || 'Galería de fotos';
-    if (CONFIG.fuente) {
-      var l = document.createElement('link');
-      l.rel = 'stylesheet';
-      l.href = 'https://fonts.googleapis.com/css2?family=' + CONFIG.fuente.replace(/ /g, '+') + '&display=swap';
-      document.head.appendChild(l);
+
+    var terminado = false;
+    function fin() { if (terminado) return; terminado = true; if (alTerminar) alTerminar(); }
+    setTimeout(fin, 1500); // si la letra tarda demasiado, se muestra igual
+    
+    if (CONFIG.fuente) { fin(); return; }
       raiz.setProperty('--fuente', "'" + CONFIG.fuente + "', Georgia, serif");
-    }
+    var href = 'https://fonts.googleapis.com/css2?family=' + CONFIG.fuente.replace(/ /g, '+') + '&display=swap';
+    var viejo = $('fuenteLink');
+    if (viejo && viejo.getAttribute('href') === href) { fin(); return; }
+    if (viejo) viejo.remove();
+    var l = document.createElement('link');
+    l.id = 'fuenteLink'; l.rel = 'stylesheet'; l.href = href;
+    l.onload = function () {
+      try { document.fonts.load("1em '" + CONFIG.fuente + "'").then(fin, fin); } catch (e) { fin(); }
+    };
+    l.onerror = fin;
+    document.head.appendChild(l);
   }
+
 
   // ---------- Presentación ----------
   function mostrar(i) {
@@ -232,14 +253,20 @@
       errorFatal('Falta el código de la galería. Usa el enlace o el código QR que te compartieron.');
       return;
     }
+     var guardada = null;
+    try { guardada = JSON.parse(localStorage.getItem('cfg_' + EVENTO) || 'null'); } catch (e) { guardada = null; }
+    if (guardada) { CONFIG = guardada; aplicarConfig(revelar); }
+
     apiGet({ accion: 'config', evento: EVENTO })
       .then(function (r) {
         if (!r || !r.ok) {
           errorFatal('No se encontró esta galería. Revisa el enlace o el código QR.');
           return;
         }
+        var cambio = !guardada || JSON.stringify(r.config) !== JSON.stringify(guardada);
         CONFIG = r.config;
-        aplicarConfig();
+        try { localStorage.setItem('cfg_' + EVENTO, JSON.stringify(CONFIG)); } catch (e) {}
+        if (cambio) aplicarConfig(revelar);
         consultar();
         setInterval(consultar, 8000);
       })
